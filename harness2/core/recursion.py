@@ -27,7 +27,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .. import config
-from . import context, prompts
+from . import context, policy, prompts
 from . import tree as harness_tree
 from .ledger import Ledger
 from .proposer import Proposer, ProposerError
@@ -123,6 +123,7 @@ def _accept_tree(
             surface,
             new,
             allow_subagents=adapter.spec.allow_subagents,
+            always_on_max=surface.always_on_max - policy.reserved_chars(adapter.spec.pinned_policy),
             reserved_scripts=harness_tree.RESERVED_SCRIPTS | adapter.spec.reserved_scripts,
         )
         adapter.validate_tree(new)

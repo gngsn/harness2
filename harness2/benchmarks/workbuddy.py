@@ -36,6 +36,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from .. import config
+from ..core import policy
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.selection import order_graded_first
@@ -750,15 +751,24 @@ class WbAdapter:
         m = RM.read_mark(Path(trial)) or {}
         return all(m.get(key) == val for key, val in self._cell_identity().items())
 
+    @property
+    def _policy_salt(self) -> str:
+        return policy.digest(self.spec.pinned_policy)
+
     def _reusable(self, trial: Path, harness_dir: Path | None) -> bool:
         return (
             _trial_finished(trial)
-            and RM.is_complete(trial, harness_dir=harness_dir)
+            and RM.is_complete(trial, harness_dir=harness_dir, salt=self._policy_salt)
             and self._identity_matches(trial)
         )
 
     def _install(self, harness_dir: Path | None) -> Install:
         if harness_dir is None:
+            if self.spec.pinned_policy:
+                raise RuntimeError(
+                    f"pinned_policy is not injected into {self.spec.name} base runs yet; "
+                    f"refusing to run the base harness without it"
+                )
             return Install(
                 staging_dir=self.spec.runs_root, fingerprint="base", extras={"install_mode": "none"}
             )
@@ -819,7 +829,11 @@ class WbAdapter:
             raise RuntimeError(f"Harbor produced no finished trial for {label} / {task_id}")
         chosen = fresh[0]
         RM.mark_complete(
-            chosen, run_id=run_id, harness_dir=harness_dir, extra=self._cell_identity()
+            chosen,
+            run_id=run_id,
+            harness_dir=harness_dir,
+            salt=self._policy_salt,
+            extra=self._cell_identity(),
         )
         return chosen
 
@@ -851,7 +865,11 @@ class WbAdapter:
             for t in fresh:
                 if not RM.read_mark(t):
                     RM.mark_complete(
-                        t, run_id=run_ids[0], harness_dir=harness_dir, extra=self._cell_identity()
+                        t,
+                        run_id=run_ids[0],
+                        harness_dir=harness_dir,
+                        salt=self._policy_salt,
+                        extra=self._cell_identity(),
                     )
             mine = _mine()
         return self._rank(mine)[:k]

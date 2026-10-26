@@ -34,6 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .. import config
+from ..core import policy
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
@@ -714,6 +715,10 @@ class JobBenchAdapter:
                     raise
         return dst
 
+    @property
+    def _policy_salt(self) -> str:
+        return policy.digest(self.spec.pinned_policy)
+
     def execute(
         self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None
     ) -> Path:
@@ -721,11 +726,13 @@ class JobBenchAdapter:
         label = run_id.replace("/", "__")
         out = self._out_dir(task_id, label)
         mark = self._traj_dir(task_id, label)
-        if RM.is_complete(mark, harness_dir=harness_dir) and self.artifacts_intact(out):
+        if RM.is_complete(
+            mark, harness_dir=harness_dir, salt=self._policy_salt
+        ) and self.artifacts_intact(out):
             out.mkdir(parents=True, exist_ok=True)
             return out
         if out.is_dir() or mark.is_dir():
-            reason = RM.why_not(mark, harness_dir=harness_dir)
+            reason = RM.why_not(mark, harness_dir=harness_dir, salt=self._policy_salt)
             if reason == "reusable":
                 reason = "output fingerprint missing or changed"
             print(
@@ -752,6 +759,7 @@ class JobBenchAdapter:
             mark,
             run_id=run_id,
             harness_dir=harness_dir,
+            salt=self._policy_salt,
             extra={"output_fingerprint": self._output_fingerprint(out)},
         )
         return dirs[0]

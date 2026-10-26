@@ -32,6 +32,7 @@ from functools import cache
 from pathlib import Path
 
 from .. import config
+from ..core import policy
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.spec import BenchPrompts, BenchSpec, resolve_channel_model
@@ -589,11 +590,13 @@ class LabAdapter:
         self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None
     ) -> Path:
         out = self._run_dir(run_id)
-        if RM.is_complete(out, harness_dir=harness_dir) and self.artifacts_intact(out):
+        if RM.is_complete(
+            out, harness_dir=harness_dir, salt=self._policy_salt
+        ) and self.artifacts_intact(out):
             self._check_tool_gate(out)
             return out
         if out.is_dir() and any(out.iterdir()):
-            reason = RM.why_not(out, harness_dir=harness_dir)
+            reason = RM.why_not(out, harness_dir=harness_dir, salt=self._policy_salt)
             if reason == "reusable":
                 reason = "output fingerprint missing or changed"
             print(
@@ -619,14 +622,24 @@ class LabAdapter:
             out,
             run_id=run_id,
             harness_dir=harness_dir,
+            salt=self._policy_salt,
             extra={"output_fingerprint": self._output_fingerprint(out)},
         )
         return out
+
+    @property
+    def _policy_salt(self) -> str:
+        return policy.digest(self.spec.pinned_policy)
 
     def _install(self, harness_dir: Path | None) -> Install:
         """BASE (harness_dir=None) is a value: fingerprint 'base', and the launcher decides
         what 'base' means on its substrate."""
         if harness_dir is None:
+            if self.spec.pinned_policy:
+                raise RuntimeError(
+                    f"pinned_policy is not injected into {self.spec.name} base runs yet; "
+                    f"refusing to run the base harness without it"
+                )
             return Install(
                 staging_dir=self.base_harness(), fingerprint="base", extras={"harness": "base"}
             )

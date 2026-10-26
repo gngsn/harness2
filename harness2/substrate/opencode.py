@@ -34,6 +34,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .. import config
+from ..core import policy as POLICY
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.tree import SurfaceSpec
@@ -196,6 +197,7 @@ class OpencodeSubstrate:
         staged = Path(tempfile.mkdtemp(prefix=f"adapt-oc-{mode}-"))
         try:
             shutil.copytree(tree_dir, staged, dirs_exist_ok=True)
+            POLICY.inject(OPENCODE_SURFACE, staged, spec.pinned_policy)
 
             for key, body in ctx.items():
                 if key.startswith("file:"):
@@ -215,12 +217,15 @@ class OpencodeSubstrate:
                 out = staged / "_composed" / "prompt.j2"
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text(composed, encoding="utf-8")
+            POLICY.verify(OPENCODE_SURFACE, staged, spec.pinned_policy)
         except BaseException:
             shutil.rmtree(staged, ignore_errors=True)
             raise
 
         return Install(
-            staging_dir=staged, fingerprint=RM.fingerprint(tree_dir), extras={"install_mode": mode}
+            staging_dir=staged,
+            fingerprint=RM.fingerprint(tree_dir, POLICY.digest(spec.pinned_policy)),
+            extras={"install_mode": mode},
         )
 
     def run_argv(

@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Mapping
 
 from .. import config
+from ..core import policy as POLICY
 from ..core import runmark as RM
 from ..core import tree as HT
 from ..core.tree import SurfaceSpec
@@ -137,9 +138,14 @@ class CodexSubstrate:
                 shutil.copytree(src, staged / entry)
             else:
                 shutil.copy2(src, staged / entry)
+        try:
+            POLICY.inject(CODEX_SURFACE, staged, spec.pinned_policy)
+        except BaseException:
+            shutil.rmtree(staged, ignore_errors=True)
+            raise
         return Install(
             staging_dir=staged,
-            fingerprint=RM.fingerprint(tree_dir),
+            fingerprint=RM.fingerprint(tree_dir, POLICY.digest(spec.pinned_policy)),
             extras={
                 "install_mode": "codex_root",
                 **{k: v for k, v in ctx.items() if not k.startswith("file:")},
