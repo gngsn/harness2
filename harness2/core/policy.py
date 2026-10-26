@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""A deployer's pinned policy: always-on text the proposer never sees as an editable file.
+"""Literal deployer policy, verified at the final execution input.
 
-The policy lives on `BenchSpec.pinned_policy`, outside the editable tree, so Propose-Probe-Compose
-can add rules around it but cannot trim or delete it. It is injected into the staged always-on
-file at materialise time and read back before the run; a mismatch raises rather than runs.
-With no policy configured every function here is a no-op.
+This module uses only the standard library. Setup copies it beside isolated benchmark
+runners so they enforce exactly the same policy without installing harness2 there.
+The policy preserves prompt text; it does not enforce model or tool behavior.
 """
 
 from __future__ import annotations
@@ -25,54 +24,95 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-from .tree import SurfaceSpec
-
 BEGIN = "PINNED POLICY (fixed by the deployer; do not override)"
 END = "END PINNED POLICY"
+OPENCODE_MAX_CHARS = 24_000
+CODEX_MAX_CHARS = 8_000
+CODEX_MAX_BYTES = 32_768
+ENV = "HARNESS2_PINNED_POLICY"
 
 
 def block(policy: str) -> str:
-    """The text injected at the head of the first always-on file; empty for no policy.
-
-    Plain text on purpose: JobBench strips HTML comments and the head survives codex's
-    tail truncation of AGENTS.md.
-    """
     body = policy.strip()
     return f"{BEGIN}\n{body}\n{END}\n\n" if body else ""
 
 
 def digest(policy: str) -> str:
-    """A short identity for the policy; "" when there is none, so fingerprints stay unchanged."""
     b = block(policy)
-    return hashlib.sha256(b.encode("utf-8")).hexdigest()[:16] if b else ""
+    return hashlib.sha256(b.encode("utf-8")).hexdigest() if b else ""
 
 
 def reserved_chars(policy: str) -> int:
-    """How much of the always-on cap the policy consumes."""
     return len(block(policy))
 
 
-def inject(surface: SurfaceSpec, staged: Path, policy: str) -> None:
-    """Prepend the policy block to the staged first always-on file, then verify it."""
+def check_size(text: str, *, max_chars: int, max_bytes: int | None = None) -> None:
+    if len(text) > max_chars:
+        raise ValueError(f"always-on content is {len(text)} chars, over the {max_chars} cap")
+    if max_bytes is not None and len(text.encode("utf-8")) > max_bytes:
+        raise ValueError(f"always-on content exceeds the {max_bytes} UTF-8 byte cap")
+
+
+def verify_prompt(text: str, policy: str, *, max_chars: int, max_bytes: int | None = None) -> None:
+    """Check the actual launch input, including limits applied by the runtime."""
     b = block(policy)
     if not b:
         return
-    target = Path(staged) / surface.always_on[0]
+    if not text.startswith(b):
+        raise ValueError("pinned policy missing or altered; refusing to run without it")
+    check_size(text, max_chars=max_chars, max_bytes=max_bytes)
+
+
+def prepend(text: str, policy: str, *, max_chars: int, max_bytes: int | None = None) -> str:
+    if not block(policy):
+        return text
+    result = block(policy) + text
+    verify_prompt(result, policy, max_chars=max_chars, max_bytes=max_bytes)
+    return result
+
+
+def inject_file(target: Path, policy: str, *, max_chars: int, max_bytes: int | None = None) -> None:
+    """Inject only after rendering/installation; read back the bytes handed to the CLI."""
+    if not block(policy):
+        return
+    existing = target.read_bytes().decode("utf-8") if target.is_file() else ""
+    result = prepend(existing, policy, max_chars=max_chars, max_bytes=max_bytes)
     target.parent.mkdir(parents=True, exist_ok=True)
-    existing = target.read_text(encoding="utf-8") if target.is_file() else ""
-    target.write_text(b + existing, encoding="utf-8")
-    verify(surface, staged, policy)
+    target.write_bytes(result.encode("utf-8"))
+    verify_file(target, policy, max_chars=max_chars, max_bytes=max_bytes)
 
 
-def verify(surface: SurfaceSpec, staged: Path, policy: str) -> None:
-    """Fail closed unless the staged always-on file still opens with the exact policy block."""
-    b = block(policy)
-    if not b:
+def verify_file(target: Path, policy: str, *, max_chars: int, max_bytes: int | None = None) -> None:
+    if not block(policy):
         return
-    target = Path(staged) / surface.always_on[0]
-    head = target.read_text(encoding="utf-8")[: len(b)] if target.is_file() else ""
-    if hashlib.sha256(head.encode("utf-8")).hexdigest()[:16] != digest(policy):
-        raise ValueError(
-            f"pinned policy missing or altered in staged {surface.always_on[0]}; "
-            f"refusing to run without it"
-        )
+    text = target.read_bytes().decode("utf-8") if target.is_file() else ""
+    verify_prompt(text, policy, max_chars=max_chars, max_bytes=max_bytes)
+
+
+def validate_tree(surface, staged: Path, policy: str) -> None:
+    """Reserve policy space even for base trees and direct materialisation."""
+    if not block(policy):
+        return
+    text = "\n\n".join(
+        (staged / rel).read_bytes().decode("utf-8") if (staged / rel).is_file() else ""
+        for rel in surface.always_on
+    )
+    prepend(
+        text,
+        policy,
+        max_chars=surface.always_on_max,
+        max_bytes=CODEX_MAX_BYTES if surface.name == "codex" else None,
+    )
+
+
+if __name__ == "__main__":
+    import os
+    import sys
+
+    # The JobBench shell runner calls this on its installed workspace, before codex.
+    inject_file(
+        Path(sys.argv[1]) / "AGENTS.md",
+        os.environ.get(ENV, ""),
+        max_chars=CODEX_MAX_CHARS,
+        max_bytes=CODEX_MAX_BYTES,
+    )

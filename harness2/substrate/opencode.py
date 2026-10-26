@@ -48,7 +48,7 @@ OPENCODE_SURFACE = SurfaceSpec(
         "LongTermMEMORY.md",
         "tool_descriptions/tool_guidance.md",
     ),
-    always_on_max=24_000,
+    always_on_max=POLICY.OPENCODE_MAX_CHARS,
     always_on_cap_reason="every token here competes with the agent's own output budget",
     skill_dir="skills",
     skill_name_rule="must_match",
@@ -197,8 +197,6 @@ class OpencodeSubstrate:
         staged = Path(tempfile.mkdtemp(prefix=f"adapt-oc-{mode}-"))
         try:
             shutil.copytree(tree_dir, staged, dirs_exist_ok=True)
-            POLICY.inject(OPENCODE_SURFACE, staged, spec.pinned_policy)
-
             for key, body in ctx.items():
                 if key.startswith("file:"):
                     rel = HT.normalize_rel(key[len("file:") :])
@@ -206,6 +204,7 @@ class OpencodeSubstrate:
                     p.parent.mkdir(parents=True, exist_ok=True)
                     p.write_text(body, encoding="utf-8")
 
+            POLICY.validate_tree(OPENCODE_SURFACE, staged, spec.pinned_policy)
             if mode == "home_dir_jinja":
                 composed = compose_prompt(staged)
 
@@ -214,10 +213,14 @@ class OpencodeSubstrate:
                     shutil.move(str(tg), staged / "tool_guidance.md")
                     shutil.rmtree(staged / "tool_descriptions", ignore_errors=True)
                 assert_jinja_safe(composed)
+                POLICY.prepend(
+                    composed.removesuffix(_JINJA_PLACEHOLDER),
+                    spec.pinned_policy,
+                    max_chars=OPENCODE_SURFACE.always_on_max,
+                )
                 out = staged / "_composed" / "prompt.j2"
                 out.parent.mkdir(parents=True, exist_ok=True)
                 out.write_text(composed, encoding="utf-8")
-            POLICY.verify(OPENCODE_SURFACE, staged, spec.pinned_policy)
         except BaseException:
             shutil.rmtree(staged, ignore_errors=True)
             raise
@@ -225,7 +228,7 @@ class OpencodeSubstrate:
         return Install(
             staging_dir=staged,
             fingerprint=RM.fingerprint(tree_dir, POLICY.digest(spec.pinned_policy)),
-            extras={"install_mode": mode},
+            extras={"install_mode": mode, "pinned_policy": spec.pinned_policy},
         )
 
     def run_argv(

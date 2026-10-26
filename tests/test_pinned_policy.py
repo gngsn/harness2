@@ -41,13 +41,12 @@ class PinnedPolicyTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, install.staging_dir, ignore_errors=True)
         return install.staging_dir, install.fingerprint
 
-    def test_policy_leads_the_staged_always_on_file_and_stays_out_of_the_source(self):
+    def test_policy_stays_out_of_editable_and_staged_source(self):
         source = self.adapter.base_harness() / "systemprompt.md"
         before = source.read_text()
         staged, _ = self.stage(POLICY)
         text = (staged / "systemprompt.md").read_text()
-        self.assertTrue(text.startswith(policy.block(POLICY)))
-        self.assertTrue(text.endswith(before))
+        self.assertEqual(text, before)
         self.assertEqual(source.read_text(), before)
 
     def test_no_policy_changes_nothing(self):
@@ -79,14 +78,15 @@ class PinnedPolicyTests(unittest.TestCase):
     def test_verify_fails_closed_on_tamper(self):
         staged, _ = self.stage(POLICY)
         target = staged / "systemprompt.md"
+        policy.inject_file(target, POLICY, max_chars=self.surface.always_on_max)
         target.write_text(target.read_text().replace("Never delete", "Feel free to delete"))
         with self.assertRaisesRegex(ValueError, "pinned policy missing or altered"):
-            policy.verify(self.surface, staged, POLICY)
+            policy.verify_file(target, POLICY, max_chars=self.surface.always_on_max)
         target.write_text("")
         with self.assertRaisesRegex(ValueError, "pinned policy missing or altered"):
-            policy.verify(self.surface, staged, POLICY)
+            policy.verify_file(target, POLICY, max_chars=self.surface.always_on_max)
 
-    def test_codex_stages_the_policy_into_agents_md(self):
+    def test_codex_delivers_policy_separately_from_staged_source(self):
         source = self.root / "cx"
         tree.write_tree(CODEX_SURFACE, {"AGENTS.md": "Do the work.\n"}, source, stubs=False)
         spec = dataclasses.replace(
@@ -94,9 +94,8 @@ class PinnedPolicyTests(unittest.TestCase):
         )
         install = CodexSubstrate().materialise(source, spec, {})
         self.addCleanup(shutil.rmtree, install.staging_dir, ignore_errors=True)
-        self.assertEqual(
-            (install.staging_dir / "AGENTS.md").read_text(), policy.block(POLICY) + "Do the work.\n"
-        )
+        self.assertEqual((install.staging_dir / "AGENTS.md").read_text(), "Do the work.\n")
+        self.assertEqual(install.extras["pinned_policy"], POLICY)
         self.assertNotEqual(install.fingerprint, runmark.fingerprint(source))
 
     def test_policy_is_charged_to_the_always_on_cap(self):
